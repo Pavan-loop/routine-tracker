@@ -4,13 +4,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { User, DietItem, DietLog, BodyScan } from '@/lib/types'
 
-const DEFAULT_ITEMS = [
-  { name: 'Eggs', quantity: '5 whole + 3 whites', order_index: 0 },
-  { name: 'Pumpkin Seeds', quantity: null, order_index: 1 },
-  { name: 'Curd', quantity: '400g', order_index: 2 },
-  { name: 'Ragi Balls + Chicken', quantity: '3 balls + 200g', order_index: 3 },
-  { name: 'Chapatis', quantity: '2', order_index: 4 },
-]
 
 type Props = { user: User }
 type NutritionLoading = Record<string, boolean>
@@ -57,15 +50,7 @@ export default function Diet({ user }: Props) {
       .eq('user_id', user.id)
       .order('order_index')
 
-    let finalItems = existing ?? []
-
-    if (finalItems.length === 0) {
-      const { data: seeded } = await supabase
-        .from('diet_items')
-        .insert(DEFAULT_ITEMS.map(item => ({ ...item, user_id: user.id })))
-        .select()
-      finalItems = seeded ?? []
-    }
+    const finalItems = existing ?? []
 
     const [{ data: logs }, { data: scans }] = await Promise.all([
       supabase.from('diet_logs').select('*').eq('user_id', user.id).eq('logged_date', today),
