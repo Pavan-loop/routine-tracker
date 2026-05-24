@@ -4,8 +4,12 @@ import OpenAI from 'openai'
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 export async function POST(request: NextRequest) {
-  const { description } = await request.json()
+  const { description, historyContext } = await request.json()
   if (!description) return NextResponse.json({ error: 'Missing description' }, { status: 400 })
+
+  const historySection = historyContext
+    ? `\n\nUser's recent diet history (use this to resolve references like "same as yesterday", "my usual", etc.):\n${historyContext}`
+    : ''
 
   const completion = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
@@ -13,6 +17,8 @@ export async function POST(request: NextRequest) {
       {
         role: 'system',
         content: `You are a precise nutritionist and food database. Parse the user's food description into individual food items and return their exact nutritional values.
+
+If the user references previous meals (e.g. "same as yesterday", "my usual diet", "what I had before"), use the diet history provided to identify and return those exact items.
 
 Return ONLY a JSON array. No markdown, no explanation. Each item:
 {"name":"string","quantity":"string or null","kcal":integer,"protein":number,"carbs":number,"fat":number}
@@ -25,7 +31,7 @@ Rules:
 - Use accurate nutritional database values (USDA / standard Indian food values where applicable)
 - If quantity is ambiguous, assume a standard serving
 
-Return ONLY the JSON array.`,
+Return ONLY the JSON array.${historySection}`,
       },
       { role: 'user', content: description },
     ],

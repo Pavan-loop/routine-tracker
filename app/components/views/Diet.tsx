@@ -39,6 +39,7 @@ export default function Diet({ user }: Props) {
   const [aiLoading, setAiLoading] = useState(false)
   const [parsedFoods, setParsedFoods] = useState<{ name: string; quantity: string | null; kcal: number; protein: number; carbs: number; fat: number }[] | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const [copyingYesterday, setCopyingYesterday] = useState(false)
 
   const today = new Date().toISOString().split('T')[0]
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
@@ -120,10 +121,37 @@ export default function Diet({ user }: Props) {
     if (!aiInput.trim() || aiLoading) return
     setAiLoading(true)
     try {
+      // Build recent diet history for context
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+      const { data: recentLogs } = await supabase
+        .from('diet_logs')
+        .select('logged_date, diet_item_id')
+        .eq('user_id', user.id)
+        .gte('logged_date', threeDaysAgo)
+        .neq('logged_date', today)
+        .order('logged_date', { ascending: false })
+
+      let historyContext: string | undefined
+      if (recentLogs && recentLogs.length > 0) {
+        const itemMap = new Map(items.map(i => [i.id, i]))
+        const byDate: Record<string, string[]> = {}
+        recentLogs.forEach(l => {
+          const item = itemMap.get(l.diet_item_id)
+          if (!item) return
+          if (!byDate[l.logged_date]) byDate[l.logged_date] = []
+          const detail = `${item.name}${item.quantity ? ` (${item.quantity})` : ''}${item.kcal ? ` — ${item.kcal}kcal, P:${item.protein}g` : ''}`
+          byDate[l.logged_date].push(detail)
+        })
+        historyContext = Object.entries(byDate)
+          .sort(([a], [b]) => b.localeCompare(a))
+          .map(([date, foods]) => `${date}:\n  • ${foods.join('\n  • ')}`)
+          .join('\n')
+      }
+
       const res = await fetch('/api/diet-parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: aiInput }),
+        body: JSON.stringify({ description: aiInput, historyContext }),
       })
       if (res.ok) {
         const data = await res.json()
@@ -166,6 +194,34 @@ export default function Diet({ user }: Props) {
     setAiInput('')
   }
 
+  const copyYesterday = async () => {
+    setCopyingYesterday(true)
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    const { data: yesterdayLogs } = await supabase
+      .from('diet_logs')
+      .select('diet_item_id')
+      .eq('user_id', user.id)
+      .eq('logged_date', yesterday)
+
+    if (!yesterdayLogs || yesterdayLogs.length === 0) {
+      setCopyingYesterday(false)
+      return
+    }
+
+    const alreadyLogged = new Set(logs.map(l => l.diet_item_id))
+    const toAdd = yesterdayLogs.filter(l => !alreadyLogged.has(l.diet_item_id))
+
+    for (const l of toAdd) {
+      const { data } = await supabase
+        .from('diet_logs')
+        .insert({ diet_item_id: l.diet_item_id, user_id: user.id, logged_date: today })
+        .select()
+        .single()
+      if (data) setLogs(prev => [...prev, data])
+    }
+    setCopyingYesterday(false)
+  }
+
   if (loading) return <Spinner />
 
   const done = logs.length
@@ -202,16 +258,34 @@ export default function Diet({ user }: Props) {
           </h1>
           <p className="text-sm text-zinc-400 mt-0.5">{dateStr}</p>
         </div>
-        <button
-          onClick={() => setEditMode(e => !e)}
-          className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
-            editMode
-              ? 'bg-emerald-500 hover:bg-emerald-400 text-white'
-              : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
-          }`}
-        >
-          {editMode ? 'Done' : 'Edit'}
-        </button>
+        <div className="flex gap-2">
+          {!editMode && (
+            <button
+              onClick={copyYesterday}
+              disabled={copyingYesterday}
+              className="px-3 py-2 rounded-xl text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-40 transition-colors flex items-center gap-1.5"
+            >
+              {copyingYesterday ? (
+                <span className="w-3.5 h-3.5 border border-zinc-400 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              )}
+              Yesterday
+            </button>
+          )}
+          <button
+            onClick={() => setEditMode(e => !e)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+              editMode
+                ? 'bg-emerald-500 hover:bg-emerald-400 text-white'
+                : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'
+            }`}
+          >
+            {editMode ? 'Done' : 'Edit'}
+          </button>
+        </div>
       </div>
 
       {!editMode && (
