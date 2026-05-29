@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { api } from '@/lib/api'
 import type { User, Task } from '@/lib/types'
 
 type Props = { user: User }
@@ -19,7 +19,7 @@ function toISODate(date: Date) {
   return `${y}-${m}-${d}`
 }
 
-export default function Tasks({ user }: Props) {
+export default function Tasks({ user: _user }: Props) {
   const [selectedDate, setSelectedDate] = useState(new Date())
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,45 +31,31 @@ export default function Tasks({ user }: Props) {
 
   const loadTasks = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('scheduled_date', dateKey)
-      .order('created_at')
-    setTasks(data ?? [])
+    const data = await api.tasks.getByDate(dateKey).catch(() => [] as Task[])
+    setTasks(data)
     setLoading(false)
-  }, [user.id, dateKey])
+  }, [dateKey])
 
   useEffect(() => { loadTasks() }, [loadTasks])
 
   const addTask = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTitle.trim()) return
-    const { data } = await supabase
-      .from('tasks')
-      .insert({ user_id: user.id, title: newTitle.trim(), scheduled_date: dateKey })
-      .select()
-      .single()
-    if (data) {
-      setTasks(prev => [...prev, data])
+    const task = await api.tasks.add({ title: newTitle.trim(), scheduled_date: dateKey }).catch(() => null)
+    if (task) {
+      setTasks(prev => [...prev, task])
       setNewTitle('')
       setAdding(false)
     }
   }
 
   const toggleTask = async (task: Task) => {
-    const { data } = await supabase
-      .from('tasks')
-      .update({ completed: !task.completed })
-      .eq('id', task.id)
-      .select()
-      .single()
-    if (data) setTasks(prev => prev.map(t => t.id === task.id ? data : t))
+    const updated = await api.tasks.update(task.id, { completed: !task.completed }).catch(() => null)
+    if (updated) setTasks(prev => prev.map(t => t.id === task.id ? updated : t))
   }
 
   const deleteTask = async (id: string) => {
-    await supabase.from('tasks').delete().eq('id', id)
+    await api.tasks.delete(id).catch(() => null)
     setTasks(prev => prev.filter(t => t.id !== id))
   }
 
@@ -82,7 +68,6 @@ export default function Tasks({ user }: Props) {
         <h1 className="text-2xl font-bold text-zinc-100">Tasks</h1>
       </div>
 
-      {/* Date navigation */}
       <div className="flex items-center gap-2">
         <button
           onClick={() => setSelectedDate(d => addDays(d, -1))}

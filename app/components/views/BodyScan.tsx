@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { api } from '@/lib/api'
 import type { User, BodyScan } from '@/lib/types'
 
 type Props = { user: User }
@@ -11,7 +11,7 @@ const emptyForm = {
   height: '', weight: '', bmi: '', smm: '', fat: '', whr: '', notes: '',
 }
 
-export default function BodyScanView({ user }: Props) {
+export default function BodyScanView({ user: _user }: Props) {
   const [scans, setScans] = useState<BodyScan[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -19,37 +19,26 @@ export default function BodyScanView({ user }: Props) {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    supabase
-      .from('body_scans')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('scan_date', { ascending: false })
-      .then(({ data }) => {
-        setScans(data ?? [])
-        setLoading(false)
-      })
-  }, [user.id])
+    api.bodyScans.getAll()
+      .then(data => { setScans(data); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [])
 
   const saveScan = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    const { data } = await supabase
-      .from('body_scans')
-      .insert({
-        user_id: user.id,
-        scan_date: form.scan_date,
-        height: form.height ? parseFloat(form.height) : null,
-        weight: form.weight ? parseFloat(form.weight) : null,
-        bmi: form.bmi ? parseFloat(form.bmi) : null,
-        smm: form.smm ? parseFloat(form.smm) : null,
-        fat: form.fat ? parseFloat(form.fat) : null,
-        whr: form.whr ? parseFloat(form.whr) : null,
-        notes: form.notes || null,
-      })
-      .select()
-      .single()
-    if (data) {
-      setScans(prev => [data, ...prev])
+    const scan = await api.bodyScans.add({
+      scan_date: form.scan_date,
+      height: form.height ? parseFloat(form.height) : null,
+      weight: form.weight ? parseFloat(form.weight) : null,
+      bmi: form.bmi ? parseFloat(form.bmi) : null,
+      smm: form.smm ? parseFloat(form.smm) : null,
+      fat: form.fat ? parseFloat(form.fat) : null,
+      whr: form.whr ? parseFloat(form.whr) : null,
+      notes: form.notes || null,
+    }).catch(() => null)
+    if (scan) {
+      setScans(prev => [scan, ...prev])
       setShowForm(false)
       setForm(emptyForm)
     }
@@ -57,7 +46,7 @@ export default function BodyScanView({ user }: Props) {
   }
 
   const deleteScan = async (id: string) => {
-    await supabase.from('body_scans').delete().eq('id', id)
+    await api.bodyScans.delete(id).catch(() => null)
     setScans(prev => prev.filter(s => s.id !== id))
   }
 

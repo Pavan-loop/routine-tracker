@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { supabase } from '@/lib/supabase'
+import { api, BASE_URL, getAuthHeaders } from '@/lib/api'
 import type { User } from '@/lib/types'
 
 type Message = { role: 'user' | 'assistant'; content: string }
@@ -15,7 +15,7 @@ const SUGGESTIONS = [
   'Give me a full weekly summary and top 3 things to fix',
 ]
 
-export default function Analysis({ user }: Props) {
+export default function Analysis({ user: _user }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -23,7 +23,7 @@ export default function Analysis({ user }: Props) {
   const [context, setContext] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => { buildContext() }, [user.id])
+  useEffect(() => { buildContext() }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -33,16 +33,16 @@ export default function Analysis({ user }: Props) {
     const today = new Date().toISOString().split('T')[0]
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
 
-    const [{ data: dietItems }, { data: dietLogs }, { data: tasks }, { data: scans }, { data: workouts }] = await Promise.all([
-      supabase.from('diet_items').select('id, name, quantity, kcal, protein, carbs, fat').eq('user_id', user.id),
-      supabase.from('diet_logs').select('diet_item_id, logged_date').eq('user_id', user.id).gte('logged_date', sevenDaysAgo),
-      supabase.from('tasks').select('scheduled_date, completed').eq('user_id', user.id).gte('scheduled_date', sevenDaysAgo),
-      supabase.from('body_scans').select('*').eq('user_id', user.id).order('scan_date', { ascending: false }).limit(3),
-      supabase.from('workouts').select('workout_date, name, type, sets, reps, weight_kg, duration_min, calories_burned')
-        .eq('user_id', user.id).gte('workout_date', sevenDaysAgo).order('workout_date', { ascending: false }),
+    const [dietItems, dietLogs, tasks, scans, workouts] = await Promise.all([
+      api.diet.getItems().catch(() => []),
+      api.diet.getLogsInRange(sevenDaysAgo, today).catch(() => []),
+      api.tasks.getInRange(sevenDaysAgo, today).catch(() => []),
+      api.bodyScans.getAll().catch(() => []),
+      api.workouts.getInRange(sevenDaysAgo, today).catch(() => []),
     ])
 
-    // --- Goal & targets from localStorage + latest scan ---
+    const latestScans = scans.slice(0, 3)
+
     const activityKey = localStorage.getItem('tracker_activity') ?? 'moderate'
     const goalKey = localStorage.getItem('tracker_goal') ?? 'maintain'
     const activityLabels: Record<string, string> = { sedentary: 'Sedentary', moderate: 'Moderate (3–5×/week)', active: 'Active (6–7×/week)' }
@@ -50,7 +50,7 @@ export default function Analysis({ user }: Props) {
     const goalOffsets: Record<string, number> = { lose: -400, recomp: -300, maintain: 0, build: 250 }
     const multipliers: Record<string, number> = { sedentary: 1.2, moderate: 1.55, active: 1.725 }
 
-    const latestScan = scans?.[0]
+    const latestScan = latestScans[0]
     let targetsSection = 'No body scan data — targets unavailable'
     if (latestScan?.weight && latestScan?.fat) {
       const lbm = latestScan.weight * (1 - latestScan.fat / 100)
@@ -63,47 +63,42 @@ export default function Analysis({ user }: Props) {
         `Goal: ${goalLabels[goalKey] ?? goalKey}
 Activity: ${activityLabels[activityKey] ?? activityKey}
 BMR: ${bmr} kcal/day | TDEE (maintenance): ${tdee} kcal/day
-Target calories: ${targetCal} kcal/day (${goalOffsets[goalKey] > 0 ? '+' : ''}${goalOffsets[goalKey] ?? 0} from TDEE)
+Target calories: ${targetCal} kcal/day (${(goalOffsets[goalKey] ?? 0) > 0 ? '+' : ''}${goalOffsets[goalKey] ?? 0} from TDEE)
 Target protein: ${minProtein}–${optProtein}g/day (1.6–2.2g × ${latestScan.weight}kg bodyweight)`
     }
 
-    // --- Diet plan with nutrition ---
-    const dietPlan = dietItems?.map(i => {
+    const dietPlan = dietItems.map(i => {
       const parts = [`${i.name}${i.quantity ? ` (${i.quantity})` : ''}`]
       if (i.kcal) parts.push(`${i.kcal}kcal`)
       if (i.protein) parts.push(`P:${i.protein}g`)
       return parts.join(' — ')
-    }).join('\n  ') ?? 'Not set up'
+    }).join('\n  ') || 'Not set up'
 
-    // --- Per-day diet log with macros ---
-    const itemMap = new Map(dietItems?.map(i => [i.id, i]) ?? [])
+    const itemMap = new Map(dietItems.map(i => [i.id, i]))
     const logsByDate: Record<string, { count: number; kcal: number; protein: number; carbs: number; fat: number }> = {}
-    dietLogs?.forEach(l => {
+    dietLogs.forEach(l => {
       if (!logsByDate[l.logged_date]) logsByDate[l.logged_date] = { count: 0, kcal: 0, protein: 0, carbs: 0, fat: 0 }
       logsByDate[l.logged_date].count++
       const item = itemMap.get(l.diet_item_id)
       if (item) {
-        logsByDate[l.logged_date].kcal += (item.kcal as number) ?? 0
-        logsByDate[l.logged_date].protein += (item.protein as number) ?? 0
-        logsByDate[l.logged_date].carbs += (item.carbs as number) ?? 0
-        logsByDate[l.logged_date].fat += (item.fat as number) ?? 0
+        logsByDate[l.logged_date].kcal += item.kcal ?? 0
+        logsByDate[l.logged_date].protein += item.protein ?? 0
+        logsByDate[l.logged_date].carbs += item.carbs ?? 0
+        logsByDate[l.logged_date].fat += item.fat ?? 0
       }
     })
-    const totalItems = dietItems?.length ?? 0
+    const totalItems = dietItems.length
     const dietLog = Object.entries(logsByDate)
       .sort(([a], [b]) => b.localeCompare(a))
       .map(([date, d]) => {
-        const macros = d.kcal > 0
-          ? ` → ${d.kcal}kcal | P:${d.protein.toFixed(1)}g C:${d.carbs.toFixed(1)}g F:${d.fat.toFixed(1)}g`
-          : ''
+        const macros = d.kcal > 0 ? ` → ${d.kcal}kcal | P:${d.protein.toFixed(1)}g C:${d.carbs.toFixed(1)}g F:${d.fat.toFixed(1)}g` : ''
         return `${date}: ${d.count}/${totalItems} items${macros}`
       }).join('\n') || 'No diet logs this week'
 
-    // --- Workout history ---
     const workoutsByDate: Record<string, { exercises: string[]; totalCal: number }> = {}
-    workouts?.forEach(w => {
+    workouts.forEach(w => {
       if (!workoutsByDate[w.workout_date]) workoutsByDate[w.workout_date] = { exercises: [], totalCal: 0 }
-      let detail = w.name as string
+      let detail = w.name
       if (w.type === 'strength' && w.sets && w.reps) {
         detail += ` — ${w.sets}×${w.reps} reps${w.weight_kg ? ` @ ${w.weight_kg}kg` : ''}`
       } else if (w.duration_min) {
@@ -111,7 +106,7 @@ Target protein: ${minProtein}–${optProtein}g/day (1.6–2.2g × ${latestScan.w
       }
       if (w.calories_burned) detail += ` (~${w.calories_burned} kcal)`
       workoutsByDate[w.workout_date].exercises.push(detail)
-      workoutsByDate[w.workout_date].totalCal += (w.calories_burned as number) ?? 0
+      workoutsByDate[w.workout_date].totalCal += w.calories_burned ?? 0
     })
     const workoutLog = Object.entries(workoutsByDate)
       .sort(([a], [b]) => b.localeCompare(a))
@@ -120,17 +115,15 @@ Target protein: ${minProtein}–${optProtein}g/day (1.6–2.2g × ${latestScan.w
         return `${date}${calStr}\n  • ${d.exercises.join('\n  • ')}`
       }).join('\n') || 'No workouts this week'
 
-    // --- Tasks ---
-    const completedTasks = tasks?.filter(t => t.completed).length ?? 0
-    const totalTasks = tasks?.length ?? 0
+    const completedTasks = tasks.filter(t => t.completed).length
+    const totalTasks = tasks.length
     const taskRate = totalTasks > 0
       ? `${completedTasks}/${totalTasks} tasks completed (${Math.round(completedTasks / totalTasks * 100)}%)`
       : 'No tasks this week'
 
-    // --- Body scans ---
-    const scanHistory = scans?.map(s =>
+    const scanHistory = latestScans.map(s =>
       `${s.scan_date}: Weight ${s.weight ?? '?'}kg | BMI ${s.bmi ?? '?'} | Muscle (SMM) ${s.smm ?? '?'}kg | Fat ${s.fat ?? '?'}% | WHR ${s.whr ?? '?'}`
-    ).join('\n') ?? 'No body scan data'
+    ).join('\n') || 'No body scan data'
 
     setContext(
 `=== TODAY ===
@@ -170,9 +163,9 @@ ${taskRate}`
     setMessages(prev => [...prev, { role: 'assistant', content: '' }])
 
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await fetch(`${BASE_URL}/ai/analyze`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ messages: updated, context }),
       })
 
@@ -191,7 +184,7 @@ ${taskRate}`
     } catch {
       setMessages(prev => [
         ...prev.slice(0, -1),
-        { role: 'assistant', content: 'Error connecting to AI. Make sure your OpenAI API key is set.' },
+        { role: 'assistant', content: 'Could not reach the AI service. Make sure your Python backend is running.' },
       ])
     }
 
@@ -210,11 +203,7 @@ ${taskRate}`
           <div className="space-y-2 pt-2">
             <p className="text-xs text-zinc-500 text-center mb-3">Suggested questions</p>
             {SUGGESTIONS.map(s => (
-              <button
-                key={s}
-                onClick={() => setInput(s)}
-                className="w-full text-left px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-zinc-300 hover:border-zinc-700 hover:text-zinc-100 transition-colors"
-              >
+              <button key={s} onClick={() => setInput(s)} className="w-full text-left px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-sm text-zinc-300 hover:border-zinc-700 hover:text-zinc-100 transition-colors">
                 {s}
               </button>
             ))}
@@ -230,9 +219,7 @@ ${taskRate}`
         {messages.map((msg, i) => (
           <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
-              msg.role === 'user'
-                ? 'bg-indigo-500 text-white rounded-br-sm'
-                : 'bg-zinc-800 text-zinc-100 rounded-bl-sm'
+              msg.role === 'user' ? 'bg-indigo-500 text-white rounded-br-sm' : 'bg-zinc-800 text-zinc-100 rounded-bl-sm'
             }`}>
               {msg.role === 'user' ? (
                 msg.content

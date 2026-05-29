@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
 import Auth from './Auth'
 import Nav from './Nav'
 import Dashboard from './views/Dashboard'
@@ -20,15 +19,25 @@ export default function App() {
   const [view, setView] = useState<View>('dashboard')
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      setLoading(false)
-    })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-    })
-    return () => subscription.unsubscribe()
+    const token = localStorage.getItem('health_tracker_token')
+    const stored = localStorage.getItem('health_tracker_user')
+    if (token && stored) {
+      try { setUser(JSON.parse(stored)) } catch {}
+    }
+    setLoading(false)
   }, [])
+
+  const handleLogin = (user: User, token: string) => {
+    localStorage.setItem('health_tracker_token', token)
+    localStorage.setItem('health_tracker_user', JSON.stringify(user))
+    setUser(user)
+  }
+
+  const handleSignOut = () => {
+    localStorage.removeItem('health_tracker_token')
+    localStorage.removeItem('health_tracker_user')
+    setUser(null)
+  }
 
   if (loading) {
     return (
@@ -38,11 +47,11 @@ export default function App() {
     )
   }
 
-  if (!user) return <Auth />
+  if (!user) return <Auth onLogin={handleLogin} />
 
   return (
     <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
-      <Nav view={view} setView={setView} onSignOut={() => supabase.auth.signOut()} />
+      <Nav view={view} setView={setView} onSignOut={handleSignOut} />
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-4 py-6 pb-24 md:pb-10">
           {view === 'dashboard' && <Dashboard user={user} setView={setView} />}

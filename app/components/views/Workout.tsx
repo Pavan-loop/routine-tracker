@@ -1,14 +1,14 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { api } from '@/lib/api'
 import type { User, WorkoutEntry } from '@/lib/types'
 
 type Props = { user: User }
 type ParsedExercise = Partial<WorkoutEntry>
 type FormState = { name: string; sets: string; reps: string; weight_kg: string; duration_min: string; calories_burned: string }
 
-export default function Workout({ user }: Props) {
+export default function Workout({ user: _user }: Props) {
   const [entries, setEntries] = useState<WorkoutEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [date, setDate] = useState(() => {
@@ -35,14 +35,14 @@ export default function Workout({ user }: Props) {
 
   const loadData = useCallback(async () => {
     setLoading(true)
-    const [{ data: workouts }, { data: scans }] = await Promise.all([
-      supabase.from('workouts').select('*').eq('user_id', user.id).eq('workout_date', date).order('created_at'),
-      supabase.from('body_scans').select('weight').eq('user_id', user.id).order('scan_date', { ascending: false }).limit(1),
+    const [workouts, scans] = await Promise.all([
+      api.workouts.getByDate(date).catch(() => [] as WorkoutEntry[]),
+      api.bodyScans.getAll().catch(() => []),
     ])
-    setEntries(workouts ?? [])
-    setBodyWeight((scans?.[0] as { weight?: number } | undefined)?.weight ?? null)
+    setEntries(workouts)
+    setBodyWeight(scans[0]?.weight ?? null)
     setLoading(false)
-  }, [user.id, date])
+  }, [date])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -52,13 +52,13 @@ export default function Workout({ user }: Props) {
     setDate(toLocalDate(d))
   }
 
-  const addEntry = async (entry: Omit<WorkoutEntry, 'id' | 'user_id' | 'created_at'>) => {
-    const { data } = await supabase.from('workouts').insert({ ...entry, user_id: user.id }).select().single()
-    if (data) setEntries(prev => [...prev, data])
+  const addEntry = async (entryData: Omit<WorkoutEntry, 'id' | 'user_id' | 'created_at'>) => {
+    const entry = await api.workouts.add(entryData as Record<string, unknown>).catch(() => null)
+    if (entry) setEntries(prev => [...prev, entry])
   }
 
   const deleteEntry = async (id: string) => {
-    await supabase.from('workouts').delete().eq('id', id)
+    await api.workouts.delete(id).catch(() => null)
     setEntries(prev => prev.filter(e => e.id !== id))
   }
 
@@ -84,15 +84,8 @@ export default function Workout({ user }: Props) {
     if (!aiInput.trim() || aiLoading) return
     setAiLoading(true)
     try {
-      const res = await fetch('/api/workout-parse', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: aiInput, bodyWeight }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setParsed(data.exercises ?? [])
-      }
+      const data = await api.ai.parseWorkout(aiInput, bodyWeight)
+      setParsed(data.exercises ?? [])
     } catch {}
     setAiLoading(false)
   }
@@ -119,18 +112,15 @@ export default function Workout({ user }: Props) {
   const totalCalories = entries.reduce((s, e) => s + (e.calories_burned ?? 0), 0)
   const dateStr = new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
 
-
   if (loading) return <Spinner />
 
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-zinc-100">Workout</h1>
         <p className="text-sm text-zinc-400 mt-0.5">{dateStr}</p>
       </div>
 
-      {/* Burn stats */}
       {totalCalories > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
           <div>
@@ -141,7 +131,6 @@ export default function Workout({ user }: Props) {
         </div>
       )}
 
-      {/* Date nav */}
       <div className="flex items-center justify-between bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5">
         <button onClick={() => changeDate(-1)} className="text-zinc-400 hover:text-zinc-100 transition-colors p-1">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -156,7 +145,6 @@ export default function Workout({ user }: Props) {
         </button>
       </div>
 
-      {/* Entries */}
       {entries.length > 0 && (
         <div className="space-y-2">
           <button
@@ -184,7 +172,6 @@ export default function Workout({ user }: Props) {
         </div>
       )}
 
-      {/* Manual add form */}
       {!showAdd ? (
         <button
           onClick={() => setShowAdd(true)}
@@ -247,7 +234,7 @@ export default function Workout({ user }: Props) {
             />
           )}
 
-          <input placeholder="Calories burned (optional — leave blank to estimate manually)" type="number" min="0"
+          <input placeholder="Calories burned (optional)" type="number" min="0"
             value={form.calories_burned} onChange={e => setForm(p => ({ ...p, calories_burned: e.target.value }))}
             className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
           />
@@ -265,7 +252,6 @@ export default function Workout({ user }: Props) {
         </form>
       )}
 
-      {/* AI Workout Parser */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2">
           <svg className="w-4 h-4 text-violet-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
@@ -350,7 +336,6 @@ export default function Workout({ user }: Props) {
 
 function ExerciseCard({ entry, onDelete }: { entry: WorkoutEntry; onDelete: (id: string) => void }) {
   const isCardio = entry.type === 'cardio'
-
   const detail = entry.type === 'strength' && entry.sets && entry.reps
     ? `${entry.sets} sets × ${entry.reps} reps${entry.weight_kg ? ` @ ${entry.weight_kg}kg` : ''}`
     : entry.duration_min
@@ -378,12 +363,10 @@ function ExerciseCard({ entry, onDelete }: { entry: WorkoutEntry; onDelete: (id:
           </svg>
         )}
       </div>
-
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-zinc-100">{entry.name}</p>
         <p className="text-xs text-zinc-500 mt-0.5">{detail}</p>
       </div>
-
       <div className="flex items-center gap-3 flex-shrink-0">
         {entry.calories_burned != null && (
           <div className="text-right">
