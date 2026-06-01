@@ -41,8 +41,21 @@ export default function Diet({ user }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [copyingYesterday, setCopyingYesterday] = useState(false)
 
-  const today = new Date().toISOString().split('T')[0]
-  const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const toISODate = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+  const today = toISODate(new Date())
+  const [selectedDate, setSelectedDate] = useState(today)
+  const isToday = selectedDate === today
+
+  const changeDate = (delta: number) => {
+    const d = new Date(selectedDate + 'T00:00:00')
+    d.setDate(d.getDate() + delta)
+    setSelectedDate(toISODate(d))
+    setEditMode(false)
+  }
+
+  const dateStr = new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
 
   const loadData = useCallback(async () => {
     const { data: existing } = await supabase
@@ -54,7 +67,7 @@ export default function Diet({ user }: Props) {
     const finalItems = existing ?? []
 
     const [{ data: logs }, { data: scans }] = await Promise.all([
-      supabase.from('diet_logs').select('*').eq('user_id', user.id).eq('logged_date', today),
+      supabase.from('diet_logs').select('*').eq('user_id', user.id).eq('logged_date', selectedDate),
       supabase.from('body_scans').select('*').eq('user_id', user.id).order('scan_date', { ascending: false }).limit(1),
     ])
 
@@ -62,7 +75,7 @@ export default function Diet({ user }: Props) {
     setLogs(logs ?? [])
     setLatestScan(scans?.[0] ?? null)
     setLoading(false)
-  }, [user.id, today])
+  }, [user.id, selectedDate])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -74,7 +87,7 @@ export default function Diet({ user }: Props) {
     } else {
       const { data } = await supabase
         .from('diet_logs')
-        .insert({ diet_item_id: itemId, user_id: user.id, logged_date: today })
+        .insert({ diet_item_id: itemId, user_id: user.id, logged_date: selectedDate })
         .select()
         .single()
       if (data) setLogs(prev => [...prev, data])
@@ -135,7 +148,7 @@ export default function Diet({ user }: Props) {
       if (recentLogs && recentLogs.length > 0) {
         const itemMap = new Map(items.map(i => [i.id, i]))
         const byDate: Record<string, string[]> = {}
-        recentLogs.forEach(l => {
+        recentLogs.forEach((l: { diet_item_id: string; logged_date: string }) => {
           const item = itemMap.get(l.diet_item_id)
           if (!item) return
           if (!byDate[l.logged_date]) byDate[l.logged_date] = []
@@ -184,7 +197,7 @@ export default function Diet({ user }: Props) {
         setItems(prev => [...prev, newItem])
         const { data: log } = await supabase
           .from('diet_logs')
-          .insert({ diet_item_id: newItem.id, user_id: user.id, logged_date: today })
+          .insert({ diet_item_id: newItem.id, user_id: user.id, logged_date: selectedDate })
           .select()
           .single()
         if (log) setLogs(prev => [...prev, log])
@@ -196,12 +209,12 @@ export default function Diet({ user }: Props) {
 
   const copyYesterday = async () => {
     setCopyingYesterday(true)
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    const prevDay = toISODate(new Date(new Date(selectedDate + 'T00:00:00').getTime() - 24 * 60 * 60 * 1000))
     const { data: yesterdayLogs } = await supabase
       .from('diet_logs')
       .select('diet_item_id')
       .eq('user_id', user.id)
-      .eq('logged_date', yesterday)
+      .eq('logged_date', prevDay)
 
     if (!yesterdayLogs || yesterdayLogs.length === 0) {
       setCopyingYesterday(false)
@@ -209,12 +222,12 @@ export default function Diet({ user }: Props) {
     }
 
     const alreadyLogged = new Set(logs.map(l => l.diet_item_id))
-    const toAdd = yesterdayLogs.filter(l => !alreadyLogged.has(l.diet_item_id))
+    const toAdd = yesterdayLogs.filter((l: { diet_item_id: string }) => !alreadyLogged.has(l.diet_item_id))
 
     for (const l of toAdd) {
       const { data } = await supabase
         .from('diet_logs')
-        .insert({ diet_item_id: l.diet_item_id, user_id: user.id, logged_date: today })
+        .insert({ diet_item_id: l.diet_item_id, user_id: user.id, logged_date: selectedDate })
         .select()
         .single()
       if (data) setLogs(prev => [...prev, data])
@@ -272,7 +285,7 @@ export default function Diet({ user }: Props) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                 </svg>
               )}
-              Yesterday
+              {isToday ? 'Yesterday' : 'Prev Day'}
             </button>
           )}
           <button
@@ -286,6 +299,21 @@ export default function Diet({ user }: Props) {
             {editMode ? 'Done' : 'Edit'}
           </button>
         </div>
+      </div>
+
+      {/* Date navigation */}
+      <div className="flex items-center justify-between bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5">
+        <button onClick={() => changeDate(-1)} className="text-zinc-400 hover:text-zinc-100 transition-colors p-1">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <span className="text-sm font-medium text-zinc-300">{isToday ? 'Today' : dateStr}</span>
+        <button onClick={() => changeDate(1)} disabled={isToday} className="text-zinc-400 hover:text-zinc-100 disabled:opacity-30 transition-colors p-1">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
       </div>
 
       {!editMode && (
@@ -463,8 +491,8 @@ export default function Diet({ user }: Props) {
         </button>
       )}
 
-      {/* AI Food Logger */}
-      {!editMode && (
+      {/* AI Food Logger — only on today */}
+      {!editMode && isToday && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-3">
           <div className="flex items-center gap-2">
             <svg className="w-4 h-4 text-violet-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
